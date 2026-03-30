@@ -1,0 +1,28 @@
+# Run outputs
+runs/
+
+# Downloaded global assets (large, re-downloadable via download_data.py)
+lore/data/rasters/
+lore/data/basemap/
+lore/data/ranges/*.gpkg
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Common tooling
+.env
+.DS_Store
+*.swp
+*.swo

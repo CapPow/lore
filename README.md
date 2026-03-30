@@ -747,9 +747,13 @@ python -m lore.visualize \
 
 ## Known Limitations
 
-- **Soil raster sampling speed:** ~30 min on spinning HDD for 123 rasters x
-  135k points (random seek latency on LZW-compressed tifs). ~2-3 min on NVMe.
-  One-time cost per run; output parquet is cached.
+- **Taxonomic scope:** range map support is currently limited to mammals via
+  the MDD. Extension to other groups would require a compatible source of
+  expert-drawn range polygons with bulk programmatic access.
+
+- **Soil raster sampling speed:** sampling 123 rasters can take up to ~2 hours
+  depending on storage I/O speed and the geographic extent of the destination
+  taxa. One-time cost per run; output parquet is cached.
 
 - **Raster preprocessing RAM:** ~44 GB peak during soil clipping
   in `preprocess_rasters.py`. One-time cost.

@@ -35,7 +35,12 @@ pip install -r requirements.txt
 
 LORE accepts either a GBIF occurrence download or a custom Darwin Core CSV
 (see Custom occurrence files under Module Reference for format requirements).
-For most use cases, a GBIF Simple download is recommended:
+For most use cases, a GBIF Simple download is recommended.
+
+If you are following the examples below, the GBIF datasets have already been
+prepared and their DOIs are ready to use directly. Skip to step 4.
+
+To prepare a dataset for your own taxon:
 
 1. Go to [gbif.org/occurrence/download](https://www.gbif.org/occurrence/download)
 2. Add filters:

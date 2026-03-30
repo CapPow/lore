@@ -781,20 +781,6 @@ python -m lore.visualize \
 
 ---
 
-## Authors
-
-Lore EA, Bennett RJ, Vasquez CM (2026). LORE: Latent Occurrence Resolution
-Engine. GitHub. https://github.com/your-org/lore
-
-## Citation
-
-If you use LORE in published work, please cite:
-
-Lore EA, Bennett RJ, Vasquez CM (2026). LORE: Latent Occurrence Resolution
-Engine. GitHub. https://github.com/your-org/lore
-
----
-
 ## Data Sources and Citations
 
 **Example Peromyscus GBIF Dataset**

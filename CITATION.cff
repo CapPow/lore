@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: >
+  If you use LORE in published work, please cite it. A methods paper
+  is in preparation. Citation details will be updated here upon publication.
+  In the interim, you may cite the software repository directly.
+title: "LORE: Latent Occurrence Resolution Engine"
+version: 0.1.0
+date-released: 2026
+url: "https://github.com/CapPow/lore"
+authors:
+  - family-names: "Powell"
+    given-names: "Caleb"
+    orcid: "0000-0002-0687-3481"
+notes: >
+  Additional authors will be added upon completion of the associated
+  methods paper (in preparation). Do not interpret the current author
+  list as final.
+license: MIT

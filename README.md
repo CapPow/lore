@@ -19,7 +19,7 @@ identical on the surface resolve to different identities under scrutiny.
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-org/lore.git
+git clone https://github.com/CapPow/lore.git
 cd lore
 ```
 
@@ -31,28 +31,33 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Download data
+### 3. Prepare an occurrence dataset
+
+LORE accepts either a GBIF occurrence download or a custom Darwin Core CSV
+(see Custom occurrence files under Module Reference for format requirements).
+For most use cases, a GBIF Simple download is recommended:
+
+1. Go to [gbif.org/occurrence/download](https://www.gbif.org/occurrence/download)
+2. Add filters:
+   - **Has coordinate:** true
+   - **Scientific name:** your pre-split source taxon (e.g. *Peromyscus maniculatus*)
+3. Select **Format: Simple** and request the download
+4. Once the download is ready, GBIF assigns it a DOI (e.g. `10.15468/dl.3cv9hy`).
+   Pass this DOI to `--gbif-doi` in the pipeline command below.
+
+To see which MDD taxonomic groups are available for range map download before
+running the pipeline:
 
 ```bash
-# List available MDD taxonomic groups
 python scripts/download_data.py --list-mdd-groups
-
-# Download all data for a run (GBIF occurrences + MDD ranges + global rasters + basemap)
-python scripts/download_data.py \
-    --gbif-doi 10.15468/dl.3cv9hy \
-    --mdd-group Rodentia \
-    --output-dir runs/peromyscus_split_2026 \
-    --ranges-dir lore/data/ranges
-
-# Or use a custom Darwin Core occurrence file instead of a GBIF download
-python scripts/download_data.py \
-    --occurrences-file path/to/occurrences.csv \
-    --mdd-group Rodentia \
-    --output-dir runs/peromyscus_split_2026 \
-    --ranges-dir lore/data/ranges
 ```
 
 ### 4. Run the full pipeline
+
+The pipeline handles data acquisition, geospatial disambiguation, feature
+extraction, model training, inference, and figure generation in a single
+command. Steps are skipped automatically if their outputs already exist.
+
 ```bash
 # Peromyscus example (~86k records, 6 classes)
 python run_pipeline.py \
@@ -65,7 +70,7 @@ python run_pipeline.py \
     --mdd-group Rodentia \
     --workers 8
 
-# Chaetodipus example (~5k records, 3 classes -- increase dropout for small datasets)
+# Chaetodipus example (~5k records, 3 classes; increased dropout for small datasets)
 python run_pipeline.py \
     --run-tag chaetodipus_nelsoni_split_2026 \
     --gbif-doi 10.15468/dl.cdmqxu \
@@ -80,6 +85,7 @@ On re-run after reviewing the analysis report (steps 1-5 skipped automatically).
 Review `runs/<run-tag>/analysis/analysis_report.txt` and pass any FLAT-rated
 features to `--exclude-features`. Lat/lon are shown here as an example; your
 report may flag different features or none at all:
+
 ```bash
 python run_pipeline.py \
     --run-tag peromyscus_split_2026 \
@@ -212,6 +218,7 @@ LORE/
 │               ├── training_log.csv
 │               └── training_summary.txt
 ├── docs/
+│   ├── gbif_datasets.txt           GBIF download DOIs for example datasets
 │   ├── hyperparameter_sweep.md     Architecture selection notes and sweep results
 │   └── sweep.py                    Hyperparameter sweep script (archived)
 ├── tests/
@@ -230,7 +237,9 @@ LORE/
 ### `scripts/download_data.py`
 
 One-time acquisition of all data required for a LORE run. Safe to re-run;
-all downloads are skipped if output files already exist.
+all downloads are skipped if output files already exist. Called automatically
+by `run_pipeline.py`; invoke directly only when acquiring data independently
+of the pipeline.
 
 ```
 --list-mdd-groups               Print available MDD taxonomic groups and exit
@@ -238,7 +247,7 @@ all downloads are skipped if output files already exist.
 --occurrences-file PATH         Custom Darwin Core CSV (mutually exclusive with --gbif-doi)
 --mdd-group GROUP               MDD taxonomic group (default: Rodentia)
 --mdd-zenodo-record ID          Zenodo record ID for MDD range maps.
-                                Default: 6644197 (resolves to latest
+                                Default: 6644197 (concept DOI, resolves to latest
                                 MDD version). Pass a versioned record ID to pin
                                 to a specific release.
 --output-dir PATH               Destination for run-specific files (occurrences).
@@ -371,14 +380,14 @@ to avoid full-band reads.
 All numeric features are min-max normalised over the specific occurrence
 records in each run. Values are not directly comparable across runs.
 
-*Date stream (2 features):* `feat_sin_doy`, `feat_cos_doy` -- cyclic encoding
+*Date stream (2 features):* `feat_sin_doy`, `feat_cos_doy` - cyclic encoding
 of day-of-year. Missing `eventDate` sets both to 0.0.
 
-*Soil stream (123 features):* `feat_soil_<classname>` -- USDA soil great group
+*Soil stream (123 features):* `feat_soil_<classname>` - USDA soil great group
 probability at occurrence coordinates (Hengl & Nauman 2018, 250 m resolution).
 One feature per class, values in [0, 1].
 
-*Name stream (1 feature):* `feat_verbatim_name_encoded` -- integer-encoded
+*Name stream (1 feature):* `feat_verbatim_name_encoded` - integer-encoded
 `verbatimScientificName`. Encoder fit on full dataset and serialized to
 `verbatim_name_encoder.json` in the run cache alongside the model checkpoint.
 When only one source taxon is present, this feature is a constant and the name
@@ -551,7 +560,7 @@ training data; running ML on them would be circular).
 
 | Column | Description |
 |---|---|
-| `final_taxon` | Primary output -- resolved taxon name, or null if excluded |
+| `final_taxon` | Primary output: resolved taxon name, or null if excluded |
 | `disambiguation_method` | One of the four methods above |
 | `suggested_names` | Original `geo.py` label, preserved unchanged |
 | `ml_prediction` | Top model prediction (null for geo-resolved records) |
@@ -584,7 +593,7 @@ resolved taxon, overlaid on MDD range polygons and a Natural Earth basemap.
 
 **Colour palette:** <=7 taxa uses the Wong (2011) 8-colour colorblind-safe
 palette. >7 taxa falls back to matplotlib `tab20` (perceptually distinct;
-colorblind safety not guaranteed at >7 taxa -- a documented limitation of
+colorblind safety not guaranteed at >7 taxa, a documented limitation of
 categorical palettes at large N).
 
 **Projection:** azimuthal equidistant, centred on the median occurrence
@@ -794,7 +803,7 @@ GBIF.org. GBIF Occurrence Download.
 https://www.gbif.org/occurrence/download
 
 **Range maps (MDD)**
-Marsh et al. (2022). Mammal Diversity Database v1.2.
+Marsh et al. (2022). Mammal Diversity Database (range maps).
 *Journal of Mammalogy* 103(1):1-14.
 Zenodo. https://doi.org/10.5281/zenodo.6644197
 

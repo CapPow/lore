@@ -1,5 +1,40 @@
 Peromyscus split
 GBIF.org (25 March 2026) GBIF Occurrence Download https://doi.org/10.15468/dl.3cv9hy 
 
+# Peromyscus example (~86k records, 6 classes)
+python run_pipeline.py \
+    --run-tag peromyscus_split_2026 \
+    --gbif-doi 10.15468/dl.3cv9hy \
+    --source-taxa "Peromyscus maniculatus" \
+    --dest-taxa "Peromyscus maniculatus" "Peromyscus sonoriensis" \
+                "Peromyscus gambelii" "Peromyscus keeni" \
+                "Peromyscus labecula" "Peromyscus arcticus" \
+    --mdd-group Rodentia \
+    --workers 8
+
+Peromyscus many-to-many
+GBIF.org (31 March 2026) GBIF Occurrence Download https://doi.org/10.15468/dl.vmzhnq 
+# Peromyscus many-to-many example (~92k records, 6 classes)
+python run_pipeline.py \
+    --run-tag peromyscus_m2m_2026 \
+    --gbif-doi 10.15468/dl.vmzhnq \
+    --source-taxa "Peromyscus maniculatus" "Peromyscus polionotus" "Peromyscus melanotis"\
+    --dest-taxa "Peromyscus maniculatus" "Peromyscus sonoriensis" \
+                "Peromyscus gambelii" "Peromyscus keeni" \
+                "Peromyscus labecula" "Peromyscus arcticus" \
+                "Peromyscus polionotus" "Peromyscus melanotis"\
+    --mdd-group Rodentia \
+    --workers 8
+
 Chaetodipus split
 GBIF.org (28 March 2026) GBIF Occurrence Download https://doi.org/10.15468/dl.cdmqxu 
+
+# Chaetodipus example (~5k records, 3 classes; increased dropout for small datasets)
+python run_pipeline.py \
+    --run-tag chaetodipus_nelsoni_split_2026 \
+    --gbif-doi 10.15468/dl.cdmqxu \
+    --source-taxa "Chaetodipus nelsoni" \
+    --dest-taxa "Chaetodipus nelsoni" "Chaetodipus durangae" "Chaetodipus collis" \
+    --mdd-group Rodentia \
+    --dropout 0.25 \
+    --workers 8

@@ -224,6 +224,7 @@ LORE/
 │               └── training_summary.txt
 ├── docs/
 │   ├── gbif_datasets.txt           GBIF download DOIs for example datasets
+│   ├── hpc_sol.md                  Guide for running LORE on HPC
 │   ├── hyperparameter_sweep.md     Architecture selection notes and sweep results
 │   └── sweep.py                    Hyperparameter sweep script (archived)
 ├── tests/
@@ -398,9 +399,8 @@ One feature per class, values in [0, 1].
 When only one source taxon is present, this feature is a constant and the name
 stream is automatically disabled during training.
 
-**Note on soil sampling speed:** ~30 min on spinning HDD for 123 rasters x
-135k points (random seek latency). ~2-3 min on NVMe. One-time cost per run;
-output parquet is cached.
+**Note on soil sampling speed:** Sampling rasters is I/O bound, and can take 
+up to 2 hours. One-time cost per run; output parquet is cached.
 
 ```
 --occurrences PATH      Path to geo_disambiguated.parquet
@@ -786,6 +786,12 @@ python -m lore.visualize \
   present in the occurrence dataset. A constant embedding contributes no
   gradient signal. The disable state is recorded in the checkpoint and
   applied transparently at inference time.
+
+- **Infraspecific occurrence records:** source taxon matching captures records
+  filed under infraspecific names (e.g. `"Microtus arvalis obscurus"`) when
+  the parent binomial is specified in `--source-taxa`. Records filed under a
+  distinct accepted name or synonym (e.g. `"Microtus levis"`) must be included
+  explicitly in `--source-taxa` to be captured.
 
 - **Colorblind palette scaling:** the Wong (2011) palette is colorblind-safe
   for <=7 taxa. Above this threshold LORE falls back to matplotlib `tab20`,

@@ -162,6 +162,15 @@ def _validate_occurrences(
     Validate a Darwin Core occurrence DataFrame before processing.
     Raises ValueError for hard failures, warns for soft ones.
     Called from load_occurrences() for all input sources.
+    
+    source_taxa : list of str, optional
+        If provided, warn if none of these taxon names appear in
+        verbatimScientificName. Accepts genus or binomial strings.
+        Binomial matching uses the first two words of verbatimScientificName,
+        so infraspecific records (e.g. "Microtus arvalis obscurus") are
+        captured when the parent binomial ("Microtus arvalis") is specified.
+        Records filed under a distinct accepted name or synonym must be
+        included explicitly.
     """
     # ---- required columns ---------------------------------------------------
     missing = [c for c in REQUIRED_OCC_COLS if c not in occ.columns]
@@ -245,7 +254,8 @@ def _validate_occurrences(
         if genera:
             mask |= vsn.str.split().str[0].isin(genera)
         if species:
-            mask |= vsn.isin(species)
+            vsn_binomial = vsn.str.split().str[:2].str.join(" ")
+            mask |= vsn_binomial.isin(species)
         if not mask.any():
             warnings.warn(
                 f"None of the source_taxa {source_taxa_clean} were found in "
@@ -280,8 +290,13 @@ def load_occurrences(
         Path to a GBIF occurrence file (.csv or .txt/tsv), or an
         already-loaded DataFrame.
     source_taxa : list of str, optional
-        If provided, filter occurrences to these taxon names before
-        processing. Accepts genus or binomial strings, same as load_ranges().
+            If provided, filter occurrences to these taxon names before
+            processing. Accepts genus or binomial strings, same as load_ranges().
+            Binomial matching uses the first two words of verbatimScientificName,
+            so infraspecific records (e.g. "Microtus arvalis obscurus") are
+            captured when the parent binomial ("Microtus arvalis") is specified.
+            Records filed under a distinct accepted name or synonym must be
+            included explicitly.
     uncertainty_floor : float
         Minimum accepted coordinateUncertaintyInMeters. Values below this
         are raised to the floor. Default: 1 m.
@@ -326,7 +341,17 @@ def load_occurrences(
         if genera:
             mask |= occ["verbatimScientificName"].str.lower().str.split().str[0].isin(genera)
         if species:
-            mask |= occ["verbatimScientificName"].str.lower().isin(species)
+            # Match on first two words so that infraspecific records
+            # (e.g. "Microtus arvalis obscurus") are included when the
+            # source binomial ("Microtus arvalis") is specified.
+            vsn_binomial = (
+                occ["verbatimScientificName"]
+                .str.lower()
+                .str.split()
+                .str[:2]
+                .str.join(" ")
+            )
+            mask |= vsn_binomial.isin(species)
         occ = occ[mask].copy()
 
     # ---- drop missing coordinates -------------------------------------------

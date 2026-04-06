@@ -45,7 +45,7 @@ Output files
           - Bioclim block     (feat_bio1, feat_bio4, feat_bio12, feat_bio15)
           - Date block        (feat_sin_doy, feat_cos_doy)
           - Soil block        summary + per-class table
-          - Name block        (feat_verbatim_name_encoded)
+          - Name block        (feat_taxon_name_encoded)
         Flags weak/flat features explicitly with copy-paste exclude syntax.
 
 Label filter
@@ -107,7 +107,7 @@ FEATURE_BLOCKS: dict[str, list[str]] = {
     "Terrain":     ["feat_elevation", "feat_slope"],
     "Bioclim":     ["feat_bio1", "feat_bio4", "feat_bio7", "feat_bio12", "feat_bio15"],
     "Date":        ["feat_sin_doy", "feat_cos_doy"],
-    "Name":        ["feat_verbatim_name_encoded"],
+    "Name":        ["feat_taxon_name_encoded"],
 }
 # Soil block is detected dynamically from column names
 
@@ -574,7 +574,7 @@ def run_analysis(
     all_feat_cols = [
         c for c in labeled.columns
         if c.startswith("feat_")
-        and c not in {"feat_verbatim_name", "feat_has_nodata"}
+        and c not in {"feat_taxon_name", "feat_taxon_name_encoded", "feat_has_nodata"}
     ]
 
     # Drop columns that are entirely NaN in the labeled subset

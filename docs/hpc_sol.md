@@ -5,7 +5,7 @@ cluster; a summary of site-specific items to adapt is at the end.
 
 **First-run time budget:** plan for approximately 2 hours of data downloading
 and 2 hours of raster preprocessing before the pipeline steps begin. A first
-run requires at least 8 hours of wall time. Subsequent runs skip downloading
+run requires up to 10 hours of wall time. Subsequent runs skip downloading
 and preprocessing and are significantly faster.
 
 ---
@@ -25,7 +25,7 @@ the ASU VPN and try again.
 From the login node, run:
 
 ```bash
-salloc --partition=public --gres=gpu:1 --cpus-per-task=8 --mem=64G --time=08:00:00
+salloc --partition=public --gres=gpu:1 --cpus-per-task=8 --mem=64G --time=10:00:00
 ```
 
 Once the allocation is granted your prompt will change to reflect the compute
@@ -38,9 +38,9 @@ Parameter notes:
 - `--cpus-per-task=8` — matches `--workers 8` in the pipeline examples.
 - `--mem=64G` — required for soil raster preprocessing (~44 GB peak). Do not
   reduce below 48G.
-- `--time=08:00:00` — 8 hours; required for a first full run including data
+- `--time=10:00:00` — 10 hours; required for a first full run including data
   downloads and raster preprocessing. Subsequent runs can use a shorter
-  allocation.
+  allocation. Raster processing time depends on spatial extent of example taxa.
 
 ---
 

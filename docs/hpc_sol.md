@@ -4,8 +4,8 @@ This guide is written for ASU Sol. Sections 3 onward apply to any SLURM-based
 cluster; a summary of site-specific items to adapt is at the end.
 
 **First-run time budget:** plan for approximately 2 hours of data downloading
-and 2 hours of raster preprocessing before the pipeline steps begin. A first
-run requires up to 10 hours of wall time. Subsequent runs skip downloading
+and up to 6 hours of raster preprocessing before the pipeline steps begin. A 
+first run requires up to 10 hours of wall time. Subsequent runs skip downloading
 and preprocessing and are significantly faster.
 
 ---

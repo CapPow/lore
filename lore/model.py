@@ -796,8 +796,42 @@ def train(
 
     _check_imbalance(y_labeled, class_names)
 
+    # ---- deduplicate training records by location --------------------------
+    # Records sharing identical spatial features produce identical feature
+    # vectors, causing data leakage across train/test splits and
+    # overrepresentation of systematic trap/survey locations in gradient
+    # updates. Deduplication is applied to the labeled training pool only;
+    # ambiguous records passed to predict.py are unaffected.
+    #
+    # Deduplication requires spatial features to be active. If lat/lon are
+    # excluded the spatial identity of records is unknown and deduplication
+    # is skipped with a warning.
+    n_before = len(labeled)
+    geo_cols = {"feat_lat", "feat_lon"}
+    if geo_cols.issubset(set(numeric_cols)):
+        dedup_cols = ["feat_lat", "feat_lon", "feat_sin_doy", "feat_cos_doy",
+                      LABEL_COL]
+        labeled = labeled.drop_duplicates(subset=dedup_cols).copy()
+        n_dropped = n_before - len(labeled)
+        if n_dropped:
+            logger.info(
+                "  Dropped %d duplicate training records (%.1f%%) sharing "
+                "identical spatial and temporal features.",
+                n_dropped, 100 * n_dropped / n_before,
+            )
+            y_labeled = le.transform(labeled[LABEL_COL].to_numpy())
+    else:
+        n_dropped = 0
+        warnings.warn(
+            "Spatial features (feat_lat, feat_lon) are excluded -- skipping "
+            "duplicate record removal. Data leakage across train/test splits "
+            "may be present for systematic sampling datasets.",
+            stacklevel=2,
+        )
+
+    n_labeled = len(labeled)
+
     # ---- stratified split --------------------------------------------------
-    n_labeled   = len(labeled)
     combined_ho = val_frac + test_frac
 
     sss1 = StratifiedShuffleSplit(n_splits=1, test_size=combined_ho, random_state=42)
@@ -1086,6 +1120,7 @@ def train(
         "  Data",
         f"    Total records   : {n_total:,}",
         f"    Single-label    : {len(labeled):,}",
+        f"    Dedup dropped   : {n_dropped:,}  (spatial+temporal duplicates)",
         f"    Parapatric      : {len(parapatric):,}",
         f"    Train           : {len(df_train):,}",
         f"    Val             : {len(df_val):,}",

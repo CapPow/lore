@@ -137,6 +137,16 @@ _OMIT_TERMS: frozenset[str] = frozenset({
     "sensu", "lato", "auct.", "infrasubsp.", "or",
 })
 
+# Maximum date range span to attempt midpoint encoding.
+# Ranges exceeding this convey no meaningful seasonal signal and are
+# treated as missing. 60 days ~ within a single seasonal transition.
+MAX_DATE_RANGE_DAYS = 60
+
+# Coordinate rounding precision for raster sampling deduplication.
+# 3 decimal places ~ 111m, slightly finer than the 250m soil raster resolution.
+# Points rounding to the same value are guaranteed to sample the same soil cell,
+# avoiding redundant I/O on systematic trap/survey datasets.
+SAMPLE_COORD_DECIMALS = 3
 
 # ---------------------------------------------------------------------------
 # Scalar raster sampling — bilinear, 2×2 windowed
@@ -344,25 +354,57 @@ def apply_name_encoder(
 # ---------------------------------------------------------------------------
 # Date encoding
 # ---------------------------------------------------------------------------
-
 def _cyclical_doy(dates: pd.Series) -> tuple[np.ndarray, np.ndarray]:
-    """Encode eventDate as sin/cos day-of-year. Missing dates → (0.0, 0.0)."""
-    parsed = pd.to_datetime(dates, errors="coerce")
+    """Encode eventDate as sin/cos day-of-year. Missing dates -> (0.0, 0.0).
+
+    Handles common GBIF eventDate formats beyond ISO 8601:
+        - Date ranges (e.g. "1965-09-15/1965-09-30"): midpoint used if span
+          is within MAX_DATE_RANGE_DAYS; otherwise treated as missing.
+        - Year-month only (e.g. "1900-04"): day imputed to 15.
+        - Year only: no seasonal information; set to 0.0 (same as missing).
+    """
+    cleaned = dates.astype(str).copy()
+
+    # handle date ranges: "date1/date2"
+    range_mask = cleaned.str.contains("/", na=False)
+    if range_mask.any():
+        parts = cleaned[range_mask].str.split("/")
+        d1 = pd.to_datetime(parts.str[0], errors="coerce")
+        d2 = pd.to_datetime(parts.str[1], errors="coerce")
+        span = (d2 - d1).dt.days
+        midpoint = d1 + pd.to_timedelta(span // 2, unit="D")
+        midpoint[span > MAX_DATE_RANGE_DAYS] = pd.NaT
+        cleaned[range_mask] = midpoint.dt.strftime("%Y-%m-%d").fillna("NaT")
+
+    # try standard parse (handles full ISO dates, datetime with time component)
+    parsed = pd.to_datetime(cleaned, errors="coerce")
+
+    # year-month only: "YYYY-MM" — month is known, impute day to 15
+    still_null = parsed.isna()
+    if still_null.any():
+        ym = pd.to_datetime(
+            cleaned[still_null] + "-15", format="%Y-%m-%d", errors="coerce"
+        )
+        parsed = parsed.copy()
+        parsed[still_null] = ym
+
+    # year-only and truly missing remain NaT — no seasonal signal, leave as 0.0
+
     # .copy() required — pandas may return a read-only array from parquet
     doy  = parsed.dt.dayofyear.to_numpy(dtype=float).copy()
     mask = np.isnan(doy)
     doy[mask] = 0.0
-
     angle   = 2.0 * np.pi * doy / 365.0
     sin_doy = np.sin(angle).astype(np.float32)
     cos_doy = np.cos(angle).astype(np.float32)
     sin_doy[mask] = 0.0
     cos_doy[mask] = 0.0
-
     n_missing = int(mask.sum())
     if n_missing:
         logger.warning(
-            "%d records have missing eventDate; date features set to 0.", n_missing
+            "%d records have missing or unresolvable eventDate; "
+            "date features set to 0.",
+            n_missing,
         )
     return sin_doy, cos_doy
 
@@ -427,6 +469,24 @@ def extract_features(
     lons = df["decimalLongitude"].to_numpy(dtype=np.float64)
     lats = df["decimalLatitude"].to_numpy(dtype=np.float64)
 
+    # ---- deduplicate coordinates for raster sampling -----------------------
+    # Many systematic survey datasets contain repeated trap coordinates.
+    # Sampling unique locations only and joining back avoids redundant I/O,
+    # particularly for the slow soil raster sampling step.
+    coord_df = pd.DataFrame({"lon": lons, "lat": lats})
+    coord_df["lon_r"] = coord_df["lon"].round(SAMPLE_COORD_DECIMALS)
+    coord_df["lat_r"] = coord_df["lat"].round(SAMPLE_COORD_DECIMALS)
+    unique_coords = coord_df.drop_duplicates(subset=["lon_r", "lat_r"])
+    n_unique = len(unique_coords)
+    if n_unique < n:
+        logger.info(
+            "  %d unique sampling locations from %d records (%.1f%% reduction).",
+            n_unique, n, 100 * (1 - n_unique / n),
+        )
+
+    u_lons = unique_coords["lon"].to_numpy(dtype=np.float64)
+    u_lats = unique_coords["lat"].to_numpy(dtype=np.float64)
+
     # ---- build raster path lists -------------------------------------------
     elev_path  = run_dir / "elevation.tif"
     slope_path = run_dir / "slope.tif"
@@ -453,13 +513,13 @@ def extract_features(
             f"Re-run preprocess_rasters.py --force."
         )
 
-    # ---- sample rasters ----------------------------------------------------
+    # ---- sample rasters (on unique coordinates only) -----------------------
     logger.info(
         "Sampling %d scalar rasters with bilinear interpolation (%d workers)...",
         len(scalar_paths), workers,
     )
     scalar_results = _sample_scalar_rasters_parallel(
-        scalar_paths, lons, lats, workers
+        scalar_paths, u_lons, u_lats, workers
     )
 
     logger.info(
@@ -467,8 +527,37 @@ def extract_features(
         len(soil_paths), workers,
     )
     soil_results = _sample_soil_rasters_concurrent(
-        soil_paths, soil_class_names, lons, lats, workers
+        soil_paths, soil_class_names, u_lons, u_lats, workers
     )
+
+    # ---- join raster results back to full record set -----------------------
+    join_cols = {}
+    for path, arr in scalar_results.items():
+        join_cols[str(path)] = arr
+    for name, arr in soil_results.items():
+        join_cols[f"_soil_{name}"] = arr
+
+    unique_coords = pd.concat(
+        [unique_coords.reset_index(drop=True),
+         pd.DataFrame(join_cols, index=unique_coords.index)],
+        axis=1,
+    )
+
+    coord_df = coord_df.merge(
+        unique_coords.drop(columns=["lon", "lat"]),
+        on=["lon_r", "lat_r"],
+        how="left",
+    )
+
+    # rebuild scalar_results and soil_results indexed to full n records
+    scalar_results = {
+        path: coord_df[str(path)].to_numpy(dtype=np.float32)
+        for path in scalar_paths
+    }
+    soil_results = {
+        name: coord_df[f"_soil_{name}"].to_numpy(dtype=np.float32)
+        for name in soil_class_names
+    }
 
     # ---- assemble feature columns ------------------------------------------
     # Accumulate all columns in a dict, then pd.concat once — avoids

@@ -22,27 +22,36 @@ Numeric (continuous, float32):
 Soil probability vector (123-dim, float32, min-max normalised per class):
     feat_soil_<class>   one column per entry in soil_class_names.json
 
+Land cover probability vector (12-dim, float32, min-max normalised per class):
+    feat_lc_<class>     one column per EarthEnv consensus land cover class.
+                        Values represent percentage cover (0-100) before
+                        normalisation. Classes: needleleaf_trees,
+                        evergreen_broadleaf_trees, deciduous_broadleaf_trees,
+                        mixed_other_trees, shrubs, herbaceous, cultivated,
+                        flooded_vegetation, urban, snow_ice, barren, open_water.
+
 Date (cyclical, float32):
     feat_sin_doy        sin(2π × day-of-year / 365)
     feat_cos_doy        cos(2π × day-of-year / 365)
                         Both are 0.0 when eventDate is missing.
 
 Taxon name:
-    feat_verbatim_name          cleaned verbatimScientificName (str).
-                                Qualifier/uncertainty terms stripped.
+    feat_taxon_name             GBIF species binomial joined with
+                                infraspecificEpithet when present
+                                (e.g. "Microtus arvalis orcadensis").
                                 Retained for human readability.
-    feat_verbatim_name_encoded  integer index into the encoder vocabulary
+    feat_taxon_name_encoded     integer index into the encoder vocabulary
                                 (int32). 0 is reserved for __unknown__ to
                                 support inference on unseen names.
 
     The encoder is fit on the FULL dataset (all records) and written to
-    <run_dir>/verbatim_name_encoder.json as {"name": int, ...}.
-    Splitting MUST be stratified on feat_verbatim_name so that every class
+    <run_dir>/taxon_name_encoder.json as {"name": int, ...}.
+    Splitting MUST be stratified on feat_taxon_name so that every class
     present at fit time appears in both train and test sets.
 
 Quality flag:
     feat_has_nodata     True if any numeric feat_* column for this row
-                        contains NaN.  feat_verbatim_name* columns are
+                        contains NaN.  feat_taxon_name* columns are
                         excluded from this check.
                         Records flagged here should be treated as
                         unreliable — filter or impute before training.
@@ -65,6 +74,10 @@ Soil probability rasters (123 classes):
     seek latency (135k seeks × 123 rasters). This is a hardware limitation.
     On NVMe expect ~2–3 min. This is a one-time cost per run; the output
     parquet is cached.
+
+Land cover rasters (12 classes):
+    Bilinear interpolation via the same scalar sampling path as WorldClim.
+    Sampled at unique coordinates only; results joined back to all records.
 
 Normalisation
 -------------
@@ -125,17 +138,8 @@ DEFAULT_WORKERS   = 8
 
 BIOCLIM_BANDS = [1, 4, 7, 12, 15]
 
-ENCODER_FILENAME = "verbatim_name_encoder.json"
+ENCODER_FILENAME = "taxon_name_encoder.json"
 UNKNOWN_TOKEN    = "__unknown__"
-
-# Qualifier / uncertainty terms stripped from verbatimScientificName
-# (ported from MLTaxD.omit_terms)
-_OMIT_TERMS: frozenset[str] = frozenset({
-    "ssp.", "subsp.", "n.sp", "n.", "sp.", "nov.", "sp.nov",
-    "aff.", "prox.", "sp.prox.", "nr.", "sp.nr.",
-    "cf.", "ca.", "f.sp.", "f.", "indet.", "leg.", "nob.",
-    "sensu", "lato", "auct.", "infrasubsp.", "or",
-})
 
 # Maximum date range span to attempt midpoint encoding.
 # Ranges exceeding this convey no meaningful seasonal signal and are
@@ -320,15 +324,26 @@ def _fit_minmax(arr: np.ndarray) -> tuple[float, float]:
 
 
 # ---------------------------------------------------------------------------
-# Verbatim name helpers
+# Taxon name helpers
 # ---------------------------------------------------------------------------
 
-def _clean_verbatim_name(name: str | None) -> str:
-    """Strip qualifier/uncertainty terms. Returns empty string for null input."""
-    if not isinstance(name, str) or not name.strip():
+def _build_taxon_name(species: str | None, infraspecific: str | None) -> str:
+    """
+    Build a clean taxon name for encoding from GBIF species and
+    infraspecificEpithet columns.
+
+    Combines species binomial with infraspecific epithet when present,
+    giving the model signal about pre-split subspecific determinations
+    which frequently correspond to post-split destination taxa.
+
+    Falls back to empty string for null/missing input.
+    """
+    if not isinstance(species, str) or not species.strip():
         return ""
-    tokens = [t for t in name.split() if t.lower() not in _OMIT_TERMS]
-    return " ".join(tokens).strip()
+    name = species.strip()
+    if isinstance(infraspecific, str) and infraspecific.strip():
+        name = f"{name} {infraspecific.strip()}"
+    return name.strip()
 
 
 def fit_name_encoder(cleaned_names: pd.Series) -> dict[str, int]:
@@ -347,9 +362,8 @@ def apply_name_encoder(
     cleaned_names: pd.Series,
     encoder: dict[str, int],
 ) -> np.ndarray:
-    """Encode cleaned names to int32. Absent names → 0 (UNKNOWN_TOKEN)."""
+    """Encode cleaned names to int32. Absent names -> 0 (UNKNOWN_TOKEN)."""
     return cleaned_names.map(lambda n: encoder.get(n, 0)).to_numpy(dtype=np.int32)
-
 
 # ---------------------------------------------------------------------------
 # Date encoding
@@ -438,7 +452,7 @@ def extract_features(
 
     Side effects
     ------------
-    Writes <output_dir>/<run_tag>/cache/verbatim_name_encoder.json.
+    Writes <output_dir>/<run_tag>/cache/taxon_name_encoder.json.
     """
     occurrences = Path(occurrences)
     run_dir     = Path(output_dir) / run_tag / "cache"
@@ -459,6 +473,18 @@ def extract_features(
     soil_stats: dict[str, dict] = json.loads(
         (run_dir / "soil_stats.json").read_text()
     )
+
+    # land cover class names — optional; warn if missing rather than raising
+    lc_names_path = run_dir / "landcover_class_names.json"
+    if lc_names_path.exists():
+        lc_class_names: list[str] = json.loads(lc_names_path.read_text())
+    else:
+        warnings.warn(
+            f"landcover_class_names.json not found in {run_dir}. "
+            f"Land cover features will be omitted. "
+            f"Re-run preprocess_rasters.py to generate land cover cache."
+        )
+        lc_class_names = []
 
     # ---- load occurrences --------------------------------------------------
     logger.info("Loading occurrences from %s", occurrences)
@@ -513,6 +539,16 @@ def extract_features(
             f"Re-run preprocess_rasters.py --force."
         )
 
+    lc_paths = [run_dir / "landcover" / f"{name}.tif" for name in lc_class_names]
+    missing_lc = [p for p in lc_paths if not p.exists()]
+    if missing_lc and lc_class_names:
+        warnings.warn(
+            f"{len(missing_lc)} land cover tifs missing from {run_dir / 'landcover'}. "
+            f"Re-run preprocess_rasters.py to regenerate."
+        )
+        lc_paths = [p for p in lc_paths if p.exists()]
+        lc_class_names = [n for n, p in zip(lc_class_names, lc_paths)]
+
     # ---- sample rasters (on unique coordinates only) -----------------------
     logger.info(
         "Sampling %d scalar rasters with bilinear interpolation (%d workers)...",
@@ -529,6 +565,14 @@ def extract_features(
     soil_results = _sample_soil_rasters_concurrent(
         soil_paths, soil_class_names, u_lons, u_lats, workers
     )
+    
+    logger.info(
+        "Sampling %d land cover rasters with bilinear interpolation (%d workers)...",
+        len(lc_paths), workers,
+    )
+    lc_results = _sample_scalar_rasters_parallel(
+        lc_paths, u_lons, u_lats, workers
+    ) if lc_paths else {}
 
     # ---- join raster results back to full record set -----------------------
     join_cols = {}
@@ -536,10 +580,13 @@ def extract_features(
         join_cols[str(path)] = arr
     for name, arr in soil_results.items():
         join_cols[f"_soil_{name}"] = arr
+    for name, path in zip(lc_class_names, lc_paths):
+        join_cols[f"_lc_{name}"] = lc_results.get(path, np.full(n_unique, np.nan, dtype=np.float32))
 
+    unique_coords = unique_coords.reset_index(drop=True)
     unique_coords = pd.concat(
-        [unique_coords.reset_index(drop=True),
-         pd.DataFrame(join_cols, index=unique_coords.index)],
+        [unique_coords,
+        pd.DataFrame(join_cols, index=unique_coords.index)],  # now both 0..n_unique
         axis=1,
     )
 
@@ -557,6 +604,11 @@ def extract_features(
     soil_results = {
         name: coord_df[f"_soil_{name}"].to_numpy(dtype=np.float32)
         for name in soil_class_names
+    }
+    
+    lc_results = {
+        name: coord_df[f"_lc_{name}"].to_numpy(dtype=np.float32)
+        for name in lc_class_names
     }
 
     # ---- assemble feature columns ------------------------------------------
@@ -590,21 +642,35 @@ def extract_features(
             raw, float(stat.get("min", 0.0)), float(stat.get("max", 1.0))
         )
 
+    # land cover (run-local min-max, same as bioclim)
+    for name in lc_class_names:
+        raw = lc_results.get(name, _nan)
+        feat_cols[f"feat_lc_{name}"] = _minmax_norm(raw, *_fit_minmax(raw))
+
     # date
     sin_doy, cos_doy = _cyclical_doy(df["eventDate"])
     feat_cols["feat_sin_doy"] = sin_doy
     feat_cols["feat_cos_doy"] = cos_doy
 
-    # verbatim name
-    cleaned = df["verbatimScientificName"].apply(_clean_verbatim_name)
-    encoder = fit_name_encoder(cleaned)
-    feat_cols["feat_verbatim_name"]         = cleaned.to_numpy(dtype=object)
-    feat_cols["feat_verbatim_name_encoded"] = apply_name_encoder(cleaned, encoder)
+    # taxon name — species + infraspecificEpithet when present
+    species_col = df["species"] if "species" in df.columns else pd.Series(
+        [""] * n, index=df.index
+    )
+    infra_col = df["infraspecificEpithet"] if "infraspecificEpithet" in df.columns else pd.Series(
+        [None] * n, index=df.index
+    )
+    taxon_names = pd.Series(
+        [_build_taxon_name(s, i) for s, i in zip(species_col, infra_col)],
+        index=df.index,
+    )
+    encoder = fit_name_encoder(taxon_names)
+    feat_cols["feat_taxon_name"]         = taxon_names.to_numpy(dtype=object)
+    feat_cols["feat_taxon_name_encoded"] = apply_name_encoder(taxon_names, encoder)
 
     # nodata flag — numeric features only
     numeric_keys = [
         k for k in feat_cols
-        if k not in {"feat_verbatim_name", "feat_verbatim_name_encoded"}
+        if k not in {"feat_taxon_name", "feat_taxon_name_encoded"}
     ]
     numeric_matrix = np.stack([feat_cols[k] for k in numeric_keys], axis=1)
     feat_cols["feat_has_nodata"] = np.isnan(numeric_matrix).any(axis=1)
@@ -703,10 +769,10 @@ def main() -> None:
     numeric_feat_cols = [
         c for c in df.columns
         if c.startswith("feat_")
-        and c not in {"feat_verbatim_name", "feat_verbatim_name_encoded", "feat_has_nodata"}
+        and c not in {"feat_taxon_name", "feat_taxon_name_encoded", "feat_has_nodata"}
     ]
     n_nodata  = int(df["feat_has_nodata"].sum())
-    n_classes = int(df["feat_verbatim_name_encoded"].max())
+    n_classes = int(df["feat_taxon_name_encoded"].max())
 
     print()
     print(f"  Records          : {len(df):,}")

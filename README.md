@@ -187,6 +187,7 @@ LORE/
 │   ├── visualize.py                Spatial figure generation
 │   └── data/
 │       ├── rasters/                Global source rasters (download once)
+│       │   ├── landcover/          EarthEnv 1.0 (with DISCover) 1-km consensus land-cover
 │       │   ├── worldclim/          WorldClim 2.1 30s elevation + bioclim bands
 │       │   └── soil/               USDA soil great group probability rasters
 │       ├── ranges/                 MDD range map geopackages (download once per group)
@@ -264,6 +265,7 @@ of the pipeline.
 --basemap-dir PATH              Destination for Natural Earth vectors (shared across runs)
 --skip-occurrences              Skip occurrence acquisition
 --skip-ranges                   Skip MDD range map download
+--skip-landcover                Skip EarthEnv landcover download
 --skip-worldclim                Skip WorldClim download
 --skip-soil                     Skip soil raster download
 --skip-basemap                  Skip Natural Earth basemap download
@@ -676,7 +678,7 @@ checks whether its primary output already exists and skips if so. Pass
 --device auto|cpu|cuda|mps      Training device.
 --force                         Re-run all steps even if outputs exist.
 --skip-download                 Skip data acquisition entirely.
---skip-rasters                  Skip WorldClim, soil, and basemap downloads.
+--skip-rasters                  Skip EarthEnv, WorldClim, soil, and basemap downloads.
 ```
 
 **Pipeline steps:**

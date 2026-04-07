@@ -161,7 +161,7 @@ def step_download(
     if ranges_out.exists() and not force:
         cmd.append("--skip-ranges")
     if skip_rasters:
-        cmd += ["--skip-worldclim", "--skip-soil", "--skip-basemap"]
+        cmd += ["--skip-worldclim", "--skip-soil", "--skip-basemap", "--skip-landcover"]
 
     _run(cmd, "download_data")
 
@@ -454,7 +454,7 @@ def main() -> None:
     parser.add_argument("--skip-download", action="store_true",
                         help="Skip GBIF and MDD range map downloads.")
     parser.add_argument("--skip-rasters", action="store_true",
-                        help="Skip global raster downloads (WorldClim + soil). "
+                        help="Skip global raster downloads (EarthEnv + WorldClim + soil). "
                              "Assumes raster files are already present.")
 
     args = parser.parse_args()

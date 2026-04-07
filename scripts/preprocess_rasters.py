@@ -26,6 +26,9 @@ Outputs are written to:
         wc2.1_30s_bio_7.tif
         wc2.1_30s_bio_12.tif
         wc2.1_30s_bio_15.tif
+        landcover/
+            consensus_full_class_<N>.tif     (one per class, 12 total)
+        landcover_class_names.json           ordered list of class names
 
 Processing is skipped for files that already exist unless --force is passed.
 
@@ -65,9 +68,23 @@ DEFAULT_BUFFER_DEG = 1.0
 DEFAULT_WORKERS    = 4
 
 WORLDCLIM_BANDS = [1, 4, 7, 12, 15]
+LANDCOVER_CLASSES = {
+    1:  "needleleaf_trees",
+    2:  "evergreen_broadleaf_trees",
+    3:  "deciduous_broadleaf_trees",
+    4:  "mixed_other_trees",
+    5:  "shrubs",
+    6:  "herbaceous",
+    7:  "cultivated",
+    8:  "flooded_vegetation",
+    9:  "urban",
+    10: "snow_ice",
+    11: "barren",
+    12: "open_water",
+}
+
 BBOX_JSON_NAME  = "bbox.json"
 BLOCK_SIZE      = 256
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -86,7 +103,6 @@ def _get_occurrence_bbox(
         float(min(180.0,  b[2] + buffer_deg)),
         float(min(90.0,   b[3] + buffer_deg)),
     )
-
 
 def _validate_bbox(run_dir: Path, bbox: tuple, force: bool) -> None:
     """
@@ -227,7 +243,7 @@ def _build_soil_cache(
     run_dir: Path,
     bbox: tuple[float, float, float, float],
     force: bool,
-) -> None:
+    ) -> None:
     """
     Clip each soil probability raster individually to bbox and write to
     <run_dir>/soil/<class_name>.tif. Each task writes its own file so
@@ -322,6 +338,45 @@ def _build_soil_cache(
     print(f"  [soil] Class names: {names_dest.name}")
     print(f"  [soil] Band stats:  {stats_dest.name}")
 
+def _build_landcover_cache(
+    landcover_dir: Path,
+    run_dir: Path,
+    bbox: tuple[float, float, float, float],
+    force: bool,
+    ) -> None:
+    """
+    Clip each EarthEnv land cover raster to bbox and write to
+    <run_dir>/landcover/<class_name>.tif. Also writes
+    landcover_class_names.json for use by features.py.
+    """
+    lc_cache   = run_dir / "landcover"
+    names_dest = run_dir / "landcover_class_names.json"
+
+    lc_cache.mkdir(parents=True, exist_ok=True)
+
+    existing = list(lc_cache.glob("*.tif"))
+    if len(existing) == len(LANDCOVER_CLASSES) and names_dest.exists() and not force:
+        print(f"  [landcover] {len(existing)} clipped tifs already present — skipping.")
+        return
+
+    tasks = []
+    class_names = []
+    for class_num, class_name in LANDCOVER_CLASSES.items():
+        src  = landcover_dir / f"consensus_full_class_{class_num}.tif"
+        dest = lc_cache / f"{class_name}.tif"
+        if not src.exists():
+            print(f"  [landcover] Source not found: {src.name} — skipping.")
+            continue
+        tasks.append((src, dest, f"lc_{class_name}"))
+        class_names.append(class_name)
+
+    if tasks:
+        print(f"  [landcover] Clipping {len(tasks)} rasters...")
+        _clip_rasters_concurrent(tasks, bbox, force, max_workers=len(tasks))
+
+    names_dest.write_text(json.dumps(class_names, indent=2))
+    print(f"  [landcover] {len(class_names)} tifs written to {lc_cache}")
+    print(f"  [landcover] Class names: {names_dest.name}")
 
 # ---------------------------------------------------------------------------
 # Main
@@ -421,6 +476,14 @@ def main():
         print(f"  [soil] Soil directory not found: {soil_dir} — skipping.")
     else:
         _build_soil_cache(soil_dir, run_dir, bbox, args.force)
+
+    # ---- land cover clipped tifs --------------------------------------------
+    print("\nClipping land cover rasters...")
+    lc_dir = args.raster_dir / "landcover"
+    if not lc_dir.exists():
+        print(f"  [landcover] Land cover directory not found: {lc_dir} — skipping.")
+    else:
+        _build_landcover_cache(lc_dir, run_dir, bbox, args.force)
 
     # ---- write bbox record --------------------------------------------------
     # Only written on a fresh run or forced regeneration. A no-op run (all

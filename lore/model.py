@@ -11,23 +11,23 @@ set of known candidate taxa).
 
 Network architecture
 --------------------
-Four parallel encoder streams, each a stack of Linear -> ELU -> Dropout
+Five parallel encoder streams, each a stack of Linear -> ELU -> Dropout
 layers, whose outputs are concatenated and passed through a shared decoder
 to a softmax output head.
 
     numeric stream   feat_lat, feat_lon (optional), feat_elevation,
                      feat_slope, feat_bio1/4/7/12/15
     soil stream      feat_soil_* (123-dim probability vector)
-                     Uses a dedicated depth (soil_encoder_depth, default 3)
+                     Uses a dedicated depth (soil_encoder_depth, default 4)
                      to give the high-dimensional soil block sufficient
                      capacity before the merge.
+    land cover stream feat_lc_* (12-dim EarthEnv consensus cover fractions)
+                     Separate stream: habitat structure is ecologically
+                     independent of climate and soil type.
     name stream      feat_verbatim_name_encoded (embedding lookup)
                      Disabled automatically when only one source taxon
                      is present -- a constant embedding carries no signal.
     date stream      feat_sin_doy, feat_cos_doy
-                     Date is also in the numeric stream; the dedicated
-                     stream lets the network learn seasonal patterns
-                     independently before merging with geography/climate.
 
 Rationale for separate streams: feature blocks have very different
 statistical properties (MI ranges from ~0.001 to ~0.87). Shared early
@@ -76,6 +76,7 @@ Key sections:
     model_state_dict    Trained weights.
     numeric_cols        Ordered list of numeric feature names used.
     soil_cols           Ordered list of soil feature names used.
+    lc_cols             Ordered list of land cover feature names used.
     date_cols           Ordered list of date feature names used.
     class_names         Ordered list of output class names.
     class_means         Per-class imputation means from training split.
@@ -136,6 +137,7 @@ from typing import Sequence
 
 import numpy as np
 import pandas as pd
+import math
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -164,7 +166,7 @@ NUMERIC_FEATURES = [
     "feat_bio1", "feat_bio4", "feat_bio7", "feat_bio12", "feat_bio15",
 ]
 DATE_FEATURES = ["feat_sin_doy", "feat_cos_doy"]
-NAME_FEATURE  = "feat_verbatim_name_encoded"
+NAME_FEATURE  = "feat_taxon_name_encoded"
 
 # Class imbalance warning threshold (max_count / min_count)
 IMBALANCE_WARN_RATIO = 100
@@ -179,6 +181,7 @@ DEFAULT_LR                 = 5e-4
 DEFAULT_DROPOUT            = 0.1
 DEFAULT_EMBED_DIM          = 32   # name embedding dimension
 DEFAULT_SOIL_ENCODER_DEPTH = 4    # deeper than numeric/date encoders given 123-dim input
+DEFAULT_LC_ENCODER_DEPTH   = 3    # shallower than soil given 12-dim input
 
 
 # ---------------------------------------------------------------------------
@@ -204,15 +207,16 @@ def _filter_parapatric(df: pd.DataFrame) -> pd.DataFrame:
 def _resolve_feature_cols(
     df: pd.DataFrame,
     exclude_features: list[str],
-) -> tuple[list[str], list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], list[str]]:
     """
     Resolve which feature columns to use given exclusions.
 
     Returns
     -------
-    numeric_cols : numeric stream feature names (subset of NUMERIC_FEATURES)
-    soil_cols    : soil stream feature names
-    date_cols    : date stream feature names (subset of DATE_FEATURES)
+    numeric_cols   : numeric stream feature names (subset of NUMERIC_FEATURES)
+    soil_cols      : soil stream feature names
+    lc_cols        : land cover stream feature names
+    date_cols      : date stream feature names (subset of DATE_FEATURES)
 
     Note: NAME_FEATURE is handled separately via use_name_stream in train().
     """
@@ -224,28 +228,35 @@ def _resolve_feature_cols(
         c for c in df.columns
         if c.startswith("feat_soil_") and c not in excluded
     ]
+    lc_cols = [
+        c for c in df.columns
+        if c.startswith("feat_lc_") and c not in excluded
+    ]
 
     if not numeric_cols:
         warnings.warn("All numeric features excluded -- numeric stream will be empty.")
     if not soil_cols:
         warnings.warn("All soil features excluded -- soil stream will be empty.")
+    if not lc_cols:
+        warnings.warn("No land cover features found -- land cover stream will be empty.")
     if not date_cols:
         warnings.warn("All date features excluded -- date stream will be empty.")
 
-    return numeric_cols, soil_cols, date_cols
+    return numeric_cols, soil_cols, lc_cols, date_cols
 
 
 def _recompute_nodata_mask(
     df: pd.DataFrame,
     numeric_cols: list[str],
     soil_cols: list[str],
+    lc_cols: list[str],
     date_cols: list[str],
 ) -> pd.Series:
     """
     Recompute nodata mask using only the features that will actually be used.
     Records are only flagged if they are missing a feature in the active set.
     """
-    active = numeric_cols + soil_cols + date_cols
+    active = numeric_cols + soil_cols + lc_cols + date_cols
     if not active:
         return pd.Series(False, index=df.index)
     return df[active].isna().any(axis=1)
@@ -366,6 +377,7 @@ class LoreNet(nn.Module):
         self,
         n_numeric: int,
         n_soil: int,
+        n_lc: int,
         n_vocab: int,
         n_classes: int,
         use_name_stream: bool       = True,
@@ -373,9 +385,10 @@ class LoreNet(nn.Module):
         hidden_dim: int             = 512,
         encoder_depth: int          = 3,
         soil_encoder_depth: int     = DEFAULT_SOIL_ENCODER_DEPTH,
+        lc_encoder_depth: int       = DEFAULT_LC_ENCODER_DEPTH,
         decoder_depth: int          = 3,
         dropout: float              = DEFAULT_DROPOUT,
-    ) -> None:
+        ) -> None:
         super().__init__()
 
         enc_out = max(32, hidden_dim // 4)
@@ -386,15 +399,13 @@ class LoreNet(nn.Module):
         self.soil_encoder = _make_encoder(
             n_soil, hidden_dim, enc_out, soil_encoder_depth, dropout, nn.ELU()
         )
-        # Date stream uses Tanh -- sinusoidal inputs saturate less under Tanh
-        # than ELU, and the smaller hidden dim reflects the low feature count.
+        self.lc_encoder = _make_encoder(
+            n_lc, hidden_dim // 2, enc_out, lc_encoder_depth, dropout, nn.ELU()
+        )
         self.date_encoder = _make_encoder(
             2, hidden_dim // 4, enc_out, encoder_depth, dropout, nn.Tanh()
         )
 
-        # Name stream is conditionally built. When use_name_stream is False
-        # (single source taxon), the embedding would be a constant lookup and
-        # contribute zero gradient signal, so we skip it entirely.
         self.use_name_stream = use_name_stream
         if use_name_stream:
             self.name_embedding = nn.Embedding(n_vocab, embed_dim, padding_idx=0)
@@ -402,15 +413,14 @@ class LoreNet(nn.Module):
                 embed_dim, hidden_dim // 4, enc_out, encoder_depth, dropout, nn.Tanh()
             )
 
-        # Compute concatenated dimension accounting for disabled/empty streams
         concat_dim = sum([
             enc_out if n_numeric        > 0   else 0,
             enc_out if n_soil           > 0   else 0,
+            enc_out if n_lc             > 0   else 0,
             enc_out,                               # date always present
             enc_out if use_name_stream        else 0,
         ])
 
-        # Shared decoder
         decoder_layers: list[nn.Module] = [
             nn.Linear(concat_dim, hidden_dim * 2),
             nn.ELU(),
@@ -429,23 +439,26 @@ class LoreNet(nn.Module):
         decoder_layers.append(nn.Linear(current, n_classes))
         self.decoder = nn.Sequential(*decoder_layers)
 
-        # Store stream presence flags for forward() guards
         self.n_numeric = n_numeric
         self.n_soil    = n_soil
+        self.n_lc      = n_lc
 
     def forward(
         self,
         x_numeric: torch.Tensor,
         x_soil:    torch.Tensor,
+        x_lc:      torch.Tensor,
         x_date:    torch.Tensor,
         x_name:    torch.Tensor,
-    ) -> torch.Tensor:
+        ) -> torch.Tensor:
         streams = []
 
         if self.n_numeric > 0:
             streams.append(self.numeric_encoder(x_numeric))
         if self.n_soil > 0:
             streams.append(self.soil_encoder(x_soil))
+        if self.n_lc > 0:
+            streams.append(self.lc_encoder(x_lc))
 
         streams.append(self.date_encoder(x_date))
 
@@ -454,7 +467,7 @@ class LoreNet(nn.Module):
             streams.append(self.name_encoder(name_emb))
 
         merged = torch.cat(streams, dim=-1)
-        return self.decoder(merged)  # logits -- softmax applied at loss/predict time
+        return self.decoder(merged)
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +501,7 @@ def build_model_from_checkpoint(
     model = LoreNet(
         n_numeric          = arch["n_numeric"],
         n_soil             = arch["n_soil"],
+        n_lc               = arch.get("n_lc", 0),
         n_vocab            = arch["n_vocab"],
         n_classes          = arch["n_classes"],
         use_name_stream    = arch["use_name_stream"],
@@ -495,9 +509,10 @@ def build_model_from_checkpoint(
         hidden_dim         = hp["hidden_dim"],
         encoder_depth      = hp["encoder_depth"],
         soil_encoder_depth = hp.get("soil_encoder_depth", DEFAULT_SOIL_ENCODER_DEPTH),
+        lc_encoder_depth   = hp.get("lc_encoder_depth", DEFAULT_LC_ENCODER_DEPTH),
         decoder_depth      = hp["decoder_depth"],
         dropout            = hp.get("dropout", DEFAULT_DROPOUT),
-    ).to(device)
+        ).to(device)
 
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -581,6 +596,7 @@ def _build_tensors(
     df: pd.DataFrame,
     numeric_cols: list[str],
     soil_cols: list[str],
+    lc_cols: list[str],
     date_cols: list[str],
     labels: np.ndarray | None,
     device: torch.device,
@@ -588,7 +604,7 @@ def _build_tensors(
     """
     Convert DataFrame columns to tensors on device.
 
-    Returns (x_numeric, x_soil, x_date, x_name[, y]).
+    Returns (x_numeric, x_soil, x_lc, x_date, x_name[, y]).
     x_name is always built -- LoreNet.forward() ignores it when
     use_name_stream is False, so no conditional logic is needed here.
     y is omitted when labels is None (inference path).
@@ -602,6 +618,7 @@ def _build_tensors(
 
     x_numeric = _to_tensor(numeric_cols)
     x_soil    = _to_tensor(soil_cols)
+    x_lc      = _to_tensor(lc_cols)
     x_date    = _to_tensor(date_cols)
     x_name    = torch.tensor(
         df[NAME_FEATURE].to_numpy(dtype=np.int64),
@@ -610,8 +627,8 @@ def _build_tensors(
 
     if labels is not None:
         y = torch.tensor(labels, dtype=torch.long, device=device)
-        return x_numeric, x_soil, x_date, x_name, y
-    return x_numeric, x_soil, x_date, x_name
+        return x_numeric, x_soil, x_lc, x_date, x_name, y
+    return x_numeric, x_soil, x_lc, x_date, x_name
 
 
 def _run_epoch(
@@ -630,8 +647,8 @@ def _run_epoch(
 
     with torch.set_grad_enabled(training):
         for batch in loader:
-            x_num, x_soil, x_date, x_name, y = [t.to(device) for t in batch]
-            logits = model(x_num, x_soil, x_date, x_name)
+            x_num, x_soil, x_lc, x_date, x_name, y = [t.to(device) for t in batch]
+            logits = model(x_num, x_soil, x_lc, x_date, x_name)
             loss   = criterion(logits, y)
 
             if training:
@@ -669,6 +686,7 @@ def train(
     hidden_dim: int                    = 512,
     encoder_depth: int                 = 3,
     soil_encoder_depth: int            = DEFAULT_SOIL_ENCODER_DEPTH,
+    lc_encoder_depth: int              = DEFAULT_LC_ENCODER_DEPTH,
     decoder_depth: int                 = 3,
     embed_dim: int                     = DEFAULT_EMBED_DIM,
     device_str: str                    = "auto",
@@ -738,12 +756,13 @@ def train(
     logger.info("  %d total records.", n_total)
 
     # ---- resolve feature columns -------------------------------------------
-    numeric_cols, soil_cols, date_cols = _resolve_feature_cols(df, exclude_features)
-    all_active = numeric_cols + soil_cols + date_cols
+    numeric_cols, soil_cols, lc_cols, date_cols = _resolve_feature_cols(df, exclude_features)
+    all_active = numeric_cols + soil_cols + lc_cols + date_cols
     logger.info(
-        "  Active features: %d numeric, %d soil, %d date.",
-        len(numeric_cols), len(soil_cols), len(date_cols),
+        "  Active features: %d numeric, %d soil, %d lc, %d date.",
+        len(numeric_cols), len(soil_cols), len(lc_cols), len(date_cols),
     )
+
     if exclude_features:
         logger.info("  Excluded: %s", exclude_features)
 
@@ -768,7 +787,7 @@ def train(
     )
 
     # ---- nodata handling on labeled ----------------------------------------
-    nodata_mask = _recompute_nodata_mask(labeled, numeric_cols, soil_cols, date_cols)
+    nodata_mask = _recompute_nodata_mask(labeled, numeric_cols, soil_cols, lc_cols, date_cols)
     n_nodata    = int(nodata_mask.sum())
 
     if n_nodata:
@@ -831,9 +850,28 @@ def train(
 
     n_labeled = len(labeled)
 
-    # ---- stratified split --------------------------------------------------
+    # ---- minimum class size guard ------------------------------------------
     combined_ho = val_frac + test_frac
+    min_class_size = math.ceil(1.0 / combined_ho) + 2
 
+    post_dedup_counts = np.bincount(y_labeled)
+    too_few = {
+        class_names[i]: int(c)
+        for i, c in enumerate(post_dedup_counts)
+        if c < min_class_size
+    }
+    if too_few:
+        raise ValueError(
+            f"After deduplication, the following classes have fewer than "
+            f"{min_class_size} records (minimum to populate train/val/test splits): "
+            f"{too_few}.\n"
+            f"Options:\n"
+            f"  1. Review geo.py outputs — range polygon may be too restrictive.\n"
+            f"  2. Pass --impute-nodata to retain nodata records for minority classes.\n"
+            f"  3. Remove the taxon from --dest-taxa if it is not the focus of this run."
+        )
+
+    # ---- stratified split --------------------------------------------------
     sss1 = StratifiedShuffleSplit(n_splits=1, test_size=combined_ho, random_state=42)
     train_idx, ho_idx = next(sss1.split(np.zeros(n_labeled), y_labeled))
 
@@ -881,9 +919,9 @@ def train(
     # so a single source taxon produces n_vocab=2.
     n_vocab = int(df[NAME_FEATURE].max()) + 1
 
-    train_tensors = _build_tensors(df_train, numeric_cols, soil_cols, date_cols, y_train, device)
-    val_tensors   = _build_tensors(df_val,   numeric_cols, soil_cols, date_cols, y_val,   device)
-    test_tensors  = _build_tensors(df_test,  numeric_cols, soil_cols, date_cols, y_test,  device)
+    train_tensors = _build_tensors(df_train, numeric_cols, soil_cols, lc_cols, date_cols, y_train, device)
+    val_tensors   = _build_tensors(df_val,   numeric_cols, soil_cols, lc_cols, date_cols, y_val,   device)
+    test_tensors  = _build_tensors(df_test,  numeric_cols, soil_cols, lc_cols, date_cols, y_test,  device)
 
     train_ds = TensorDataset(*train_tensors)
     val_ds   = TensorDataset(*val_tensors)
@@ -900,6 +938,7 @@ def train(
     model = LoreNet(
         n_numeric          = len(numeric_cols),
         n_soil             = len(soil_cols),
+        n_lc               = len(lc_cols),
         n_vocab            = n_vocab,
         n_classes          = n_classes,
         use_name_stream    = use_name_stream,
@@ -907,9 +946,10 @@ def train(
         hidden_dim         = hidden_dim,
         encoder_depth      = encoder_depth,
         soil_encoder_depth = soil_encoder_depth,
+        lc_encoder_depth   = lc_encoder_depth,
         decoder_depth      = decoder_depth,
         dropout            = dropout,
-    ).to(device)
+        ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info("  Model parameters: %d", n_params)
@@ -998,13 +1038,13 @@ def train(
     if len(parapatric) > 0:
         logger.info("  Evaluating on %d parapatric records...", len(parapatric))
         para_nodata = _recompute_nodata_mask(
-            parapatric, numeric_cols, soil_cols, date_cols
+            parapatric, numeric_cols, soil_cols, lc_cols, date_cols
         )
         para_eval = parapatric[~para_nodata].copy()
 
         if len(para_eval) > 0:
             para_tensors = _build_tensors(
-                para_eval, numeric_cols, soil_cols, date_cols, None, device
+                para_eval, numeric_cols, soil_cols, lc_cols, date_cols, None, device
             )
             para_ds     = TensorDataset(*para_tensors)
             para_loader = DataLoader(para_ds, batch_size=batch_size, shuffle=False)
@@ -1013,8 +1053,8 @@ def train(
             all_probs: list[torch.Tensor] = []
             with torch.no_grad():
                 for batch in para_loader:
-                    x_num, x_soil, x_date, x_name = [t.to(device) for t in batch]
-                    logits = model(x_num, x_soil, x_date, x_name)
+                    x_num, x_soil, x_lc, x_date, x_name = [t.to(device) for t in batch]
+                    logits = model(x_num, x_soil, x_lc, x_date, x_name)
                     all_probs.append(torch.softmax(logits, dim=1).cpu())
 
             probs      = torch.cat(all_probs, dim=0).numpy()
@@ -1054,6 +1094,7 @@ def train(
         "class_encoder":    {name: int(i) for i, name in enumerate(class_names)},
         "numeric_cols":     numeric_cols,
         "soil_cols":        soil_cols,
+        "lc_cols":          lc_cols,
         "date_cols":        date_cols,
         "name_feature":     NAME_FEATURE,
         "n_vocab":          n_vocab,
@@ -1063,6 +1104,7 @@ def train(
         "architecture": {
             "n_numeric":       len(numeric_cols),
             "n_soil":          len(soil_cols),
+            "n_lc":            len(lc_cols),
             "n_vocab":         n_vocab,
             "n_classes":       n_classes,
             "use_name_stream": use_name_stream,
@@ -1071,6 +1113,7 @@ def train(
             "hidden_dim":          hidden_dim,
             "encoder_depth":       encoder_depth,
             "soil_encoder_depth":  soil_encoder_depth,
+            "lc_encoder_depth": lc_encoder_depth,
             "decoder_depth":       decoder_depth,
             "embed_dim":           embed_dim,
             "dropout":             dropout,
@@ -1141,6 +1184,7 @@ def train(
         "  Features",
         f"    Numeric     : {numeric_cols}",
         f"    Soil        : {len(soil_cols)} classes",
+        f"    Land cover  : {len(lc_cols)} classes",
         f"    Date        : {date_cols}",
         f"    Name stream : {'enabled' if use_name_stream else 'disabled (single source taxon)'}",
         f"    Excluded    : {exclude_features or 'none'}",
@@ -1149,6 +1193,7 @@ def train(
         f"    hidden_dim         : {hidden_dim}",
         f"    encoder_depth      : {encoder_depth}",
         f"    soil_encoder_depth : {soil_encoder_depth}",
+        f"    lc_encoder_depth   : {lc_encoder_depth}",
         f"    decoder_depth      : {decoder_depth}",
         f"    embed_dim          : {embed_dim}",
         f"    dropout            : {dropout}",
@@ -1243,6 +1288,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--soil-encoder-depth", type=int,   default=DEFAULT_SOIL_ENCODER_DEPTH,
                    help="Depth of soil stream encoder. Default 3 (one deeper than "
                         "numeric/date encoders to handle the 123-dim soil input).")
+    p.add_argument("--lc-encoder-depth", type=int, default=DEFAULT_LC_ENCODER_DEPTH,
+                   help="Depth of land cover stream encoder. Default 3.")
     p.add_argument("--decoder-depth",      type=int,   default=3)
     p.add_argument("--embed-dim",          type=int,   default=DEFAULT_EMBED_DIM)
     p.add_argument("--device",             default="auto",
@@ -1292,6 +1339,7 @@ def main() -> None:
         hidden_dim           = args.hidden_dim,
         encoder_depth        = args.encoder_depth,
         soil_encoder_depth   = args.soil_encoder_depth,
+        lc_encoder_depth     = args.lc_encoder_depth,
         decoder_depth        = args.decoder_depth,
         embed_dim            = args.embed_dim,
         device_str           = args.device,

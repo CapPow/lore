@@ -140,13 +140,13 @@ geo_disambiguated.parquet       suggested_names column assigned
 scripts/preprocess_rasters.py   Clip global rasters to bbox, derive slope
         |
         v
-runs/<run_tag>/cache/           Regional rasters + soil stats + bbox record
+runs/<run_tag>/cache/           Regional rasters + soil stats + land cover + bbox record
         |
         v
    lore/features.py             Raster sampling + feature assembly
         |
         v
-runs/<run_tag>/features.parquet         135 feature columns per record
+runs/<run_tag>/features.parquet         149 feature columns per record
         |
         v
    lore/analysis.py             Feature discriminability analysis
@@ -217,7 +217,7 @@ LORE/
 │           ├── soil/               123 clipped soil tifs
 │           ├── soil_class_names.json
 │           ├── soil_stats.json
-│           ├── verbatim_name_encoder.json
+│           ├── taxon_name_encoder.json
 │           └── model/
 │               ├── checkpoint.pt
 │               ├── training_log.csv
@@ -367,7 +367,7 @@ Samples environmental rasters at occurrence coordinates and assembles a
 feature parquet. Uses `rasterio.DatasetReader.sample()` for soil rasters
 to avoid full-band reads.
 
-**135 feature columns per record:**
+**149 feature columns per record:**
 
 *Numeric stream (9 features):*
 
@@ -387,16 +387,27 @@ All numeric features are min-max normalised over the specific occurrence
 records in each run. Values are not directly comparable across runs.
 
 *Date stream (2 features):* `feat_sin_doy`, `feat_cos_doy` - cyclic encoding
-of day-of-year. Missing `eventDate` sets both to 0.0.
+of day-of-year. Missing `eventDate` sets both to 0.0. Date ranges spanning
+more than 60 days are treated as missing; year-month partial dates impute
+the day to the 15th.
 
 *Soil stream (123 features):* `feat_soil_<classname>` - USDA soil great group
 probability at occurrence coordinates (Hengl & Nauman 2018, 250 m resolution).
 One feature per class, values in [0, 1].
 
-*Name stream (1 feature):* `feat_verbatim_name_encoded` - integer-encoded
-`verbatimScientificName`. Encoder fit on full dataset and serialized to
-`verbatim_name_encoder.json` in the run cache alongside the model checkpoint.
-When only one source taxon is present, this feature is a constant and the name
+*Land cover stream (12 features):* `feat_lc_<classname>` - EarthEnv consensus
+land cover percentage cover at occurrence coordinates (Tuanmu & Jetz 2014, 1 km
+resolution). One feature per class, values normalized to [0, 1]. Classes:
+needleleaf trees, evergreen broadleaf trees, deciduous broadleaf trees,
+mixed/other trees, shrubs, herbaceous, cultivated, flooded vegetation, urban,
+snow/ice, barren, open water.
+
+*Name stream (1 feature):* `feat_taxon_name_encoded` - integer-encoded taxon
+name built from the GBIF `species` field joined with `infraspecificEpithet`
+when present (e.g. `"Microtus arvalis orcadensis"`). Encoder fit on full dataset
+and serialized to `taxon_name_encoder.json` in the run cache. Subspecific
+epithets are retained as they frequently correspond to post-split destination
+taxa and carry geographic signal. When only one unique name is present, the name
 stream is automatically disabled during training.
 
 **Note on soil sampling speed:** Sampling rasters is I/O bound, and can take 
@@ -455,20 +466,21 @@ noise; exclusion is optional.
 
 ### `lore/model.py`
 
-Trains a multi-input PyTorch neural network (LoreNet) with four parallel
+Trains a multi-input PyTorch neural network (LoreNet) with five parallel
 encoder streams that are concatenated and decoded to a softmax output head.
 
 ```
-numeric input  --> [Linear->ELU->Dropout] x depth --> enc_out
-soil input     --> [Linear->ELU->Dropout] x depth --> enc_out
-date input     --> [Linear->Tanh->Dropout] x depth --> enc_out
-name input     --> Embedding -> [Linear->Tanh->Dropout] x depth --> enc_out
-                                                              |
-                              Concatenate <-----------------+
-                                    |
-                         [Linear->ELU->Dropout] x decoder_depth
-                                    |
-                              Linear -> softmax
+numeric input      --> [Linear->ELU->Dropout] x depth --> enc_out
+soil input         --> [Linear->ELU->Dropout] x depth --> enc_out
+land cover input   --> [Linear->ELU->Dropout] x depth --> enc_out
+date input         --> [Linear->Tanh->Dropout] x depth --> enc_out
+name input         --> Embedding -> [Linear->Tanh->Dropout] x depth --> enc_out
+                                                                  |
+                                  Concatenate <-----------------+
+                                        |
+                             [Linear->ELU->Dropout] x decoder_depth
+                                        |
+                                  Linear -> softmax
 ```
 
 Separate streams are used because feature blocks have very different
@@ -800,8 +812,9 @@ python -m lore.visualize \
 
 - **License:** LORE source code is MIT licensed. Output datasets inherit the
   licenses of their source data (GBIF CC-BY 4.0, MDD CC-BY 4.0, WorldClim
-  CC-BY 4.0, Hengl soil data CC-BY 4.0). Users are responsible for compliance
-  with data provider terms.
+  CC-BY 4.0, Hengl soil data CC-BY 4.0, EarthEnv land cover CC-BY-NC 4.0).
+  The EarthEnv land cover data is licensed for non-commercial use only.
+  Users are responsible for compliance with data provider terms.
 
 ---
 
@@ -830,6 +843,11 @@ Climatology* 37(12):4302-4315. https://doi.org/10.1002/joc.5086
 **Soil great group probability rasters**
 Hengl T, Nauman T (2018). Predicted USDA soil great groups at 250 m
 (probabilities). Zenodo. https://doi.org/10.5281/zenodo.3528062
+
+**Land cover rasters (EarthEnv)**
+Tuanmu MN, Jetz W (2014). A global 1-km consensus land-cover product for
+biodiversity and ecosystem modeling. *Global Ecology and Biogeography*
+23(9):1031-1045. https://www.earthenv.org/landcover
 
 **Basemap vectors (Natural Earth)**
 Natural Earth. Free vector and raster map data.

@@ -467,7 +467,7 @@ def visualize(
     handles = _build_legend(palette, has_geo, has_ml, has_ml_low, has_excl)
     legend  = ax.legend(
         handles=handles,
-        loc="lower left",
+        loc="best",
         fontsize=7,
         framealpha=0.85,
         edgecolor="#CCCCCC",

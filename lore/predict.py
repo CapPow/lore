@@ -148,17 +148,13 @@ def _run_inference(
     df: pd.DataFrame,
     numeric_cols: list[str],
     soil_cols: list[str],
+    lc_cols: list[str],
     date_cols: list[str],
     device: torch.device,
     batch_size: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Run forward pass on df. Returns (pred_indices, confidences).
+    ) -> tuple[np.ndarray, np.ndarray]:
 
-    pred_indices : int array of argmax class indices
-    confidences  : float32 array of softmax max probabilities
-    """
-    tensors = _build_tensors(df, numeric_cols, soil_cols, date_cols, None, device)
+    tensors = _build_tensors(df, numeric_cols, soil_cols, lc_cols, date_cols, None, device)
     dataset = TensorDataset(*tensors)
     loader  = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
@@ -166,8 +162,8 @@ def _run_inference(
     model.eval()
     with torch.no_grad():
         for batch in loader:
-            x_num, x_soil, x_date, x_name = [t.to(device) for t in batch]
-            logits = model(x_num, x_soil, x_date, x_name)
+            x_num, x_soil, x_lc, x_date, x_name = [t.to(device) for t in batch]
+            logits = model(x_num, x_soil, x_lc, x_date, x_name)
             all_probs.append(torch.softmax(logits, dim=1).cpu())
 
     probs       = torch.cat(all_probs, dim=0).numpy()
@@ -235,6 +231,7 @@ def predict(
     class_names  = ckpt["class_names"]
     numeric_cols = ckpt["numeric_cols"]
     soil_cols    = ckpt["soil_cols"]
+    lc_cols      = ckpt.get("lc_cols", [])
     date_cols    = ckpt["date_cols"]
     class_means  = ckpt.get("class_means", {})
     ckpt_thresh  = ckpt.get("confidence_threshold")
@@ -285,7 +282,7 @@ def predict(
 
     # ---- nodata handling for ambiguous records -----------------------------
     nodata_mask = _recompute_nodata_mask(
-        df_ambiguous, numeric_cols, soil_cols, date_cols
+        df_ambiguous, numeric_cols, soil_cols, lc_cols, date_cols
     )
     n_nodata = int(nodata_mask.sum())
 
@@ -301,7 +298,7 @@ def predict(
             # Recompute mask after imputation -- should be all-False if
             # imputation covered all NaN columns
             nodata_mask = _recompute_nodata_mask(
-                df_ambiguous, numeric_cols, soil_cols, date_cols
+                df_ambiguous, numeric_cols, soil_cols, lc_cols, date_cols
             )
         else:
             logger.info(
@@ -353,7 +350,7 @@ def predict(
     # ML inference on remaining ambiguous records
     if len(df_to_infer) > 0:
         pred_idx, confidences = _run_inference(
-            model, df_to_infer, numeric_cols, soil_cols, date_cols,
+            model, df_to_infer, numeric_cols, soil_cols, lc_cols, date_cols,
             device, batch_size,
         )
         pred_names = [class_names[i] for i in pred_idx]

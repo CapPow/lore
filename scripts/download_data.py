@@ -32,6 +32,10 @@ Global (shared across runs):
         Source: Zenodo DOI 10.5281/zenodo.3528062
         Citation: Hengl & Nauman (2018) Zenodo
 
+    EarthEnv Consensus Land Cover (1km, 12 classes, CC BY-NC 4.0)
+        Source: https://www.earthenv.org/landcover
+        Citation: Tuanmu MN, Jetz W (2014). Global Ecology and Biogeography 23(9):1031-1045
+
     Natural Earth 1:10m cultural + physical vectors (basemap)
         Source: https://www.naturalearthdata.com
 
@@ -45,6 +49,7 @@ Default output layout
     <raster-dir>/worldclim/wc2.1_30s_bio_<N>.tif
     <raster-dir>/soil/sol_grtgroup_usda.soiltax.*_p_250m*.tif
     <raster-dir>/soil/sol_grtgroup_usda.soiltax_c_250m*.tif
+    <raster-dir>/landcover/consensus_full_class_<N>.tif
 
     <basemap-dir>/ne_10m_admin_0_countries/
     <basemap-dir>/ne_10m_admin_1_states_provinces/
@@ -109,6 +114,7 @@ DEFAULT_BASEMAP_DIR = PROJECT_ROOT / "lore"  / "data" / "basemap"
 MDD_ZENODO_RECORD   = "6644197"
 MDD_ZENODO_BASE_DOI = "10.5281/zenodo"
 
+
 # WorldClim 2.1 — 30 arc-second
 WORLDCLIM_BIO_URL   = "https://geodata.ucdavis.edu/climate/worldclim/2_1/base/wc2.1_30s_bio.zip"
 WORLDCLIM_ELEV_URL  = "https://geodata.ucdavis.edu/climate/worldclim/2_1/base/wc2.1_30s_elev.zip"
@@ -126,6 +132,30 @@ BASEMAP_DATASETS = {
     "ne_10m_admin_1_states_provinces": "https://naturalearth.s3.amazonaws.com/10m_cultural/ne_10m_admin_1_states_provinces.zip",
     "ne_10m_land":                     "https://naturalearth.s3.amazonaws.com/10m_physical/ne_10m_land.zip",
 }
+
+# EarthEnv Consensus Land Cover — direct GeoTIFF URLs (stable)
+# Full version (with DISCover) recommended for most applications.
+# License: CC BY-NC 4.0 (non-commercial use only)
+LANDCOVER_CITATION = (
+    "Tuanmu MN, Jetz W (2014). A global 1-km consensus land-cover product "
+    "for biodiversity and ecosystem modeling. "
+    "Global Ecology and Biogeography 23(9):1031-1045."
+)
+LANDCOVER_CLASSES = {
+    1:  "needleleaf_trees",
+    2:  "evergreen_broadleaf_trees",
+    3:  "deciduous_broadleaf_trees",
+    4:  "mixed_other_trees",
+    5:  "shrubs",
+    6:  "herbaceous",
+    7:  "cultivated",
+    8:  "flooded_vegetation",
+    9:  "urban",
+    10: "snow_ice",
+    11: "barren",
+    12: "open_water",
+}
+LANDCOVER_BASE_URL = "https://data.earthenv.org/consensus_landcover/with_DISCover"
 
 CHUNK_SIZE = 1024 * 1024  # 1 MB
 
@@ -518,6 +548,37 @@ def download_basemap(basemap_dir: Path) -> None:
 
     print(f"[basemap] Done. Files in {basemap_dir}\n")
 
+# ---------------------------------------------------------------------------
+# Global: EarthEnv land cover rasters
+# ---------------------------------------------------------------------------
+
+def download_landcover(raster_dir: Path) -> None:
+    """
+    Download EarthEnv Consensus Land Cover GeoTIFFs (12 classes, 1km).
+    Skips files that already exist.
+
+    License: CC BY-NC 4.0. For non-commercial use only.
+    Citation: Tuanmu & Jetz (2014) Global Ecology and Biogeography 23(9):1031-1045
+    Source: https://www.earthenv.org/landcover
+    """
+    lc_dir = raster_dir / "landcover"
+    lc_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[landcover] EarthEnv Consensus Land Cover (12 classes, 1km)")
+    print(f"[landcover] {LANDCOVER_CITATION}")
+    print(f"[landcover] License: CC BY-NC 4.0 (non-commercial use only)\n")
+
+    for class_num, class_name in LANDCOVER_CLASSES.items():
+        filename = f"consensus_full_class_{class_num}.tif"
+        dest = lc_dir / filename
+        if dest.exists():
+            print(f"[landcover]   {filename} already present — skipping.")
+            continue
+        url = f"{LANDCOVER_BASE_URL}/{filename}"
+        size_hint = "~20-100 MB"
+        _stream_to_file(url, dest, f"landcover class {class_num} ({class_name}) {size_hint}")
+
+    print(f"[landcover] Done. Files in {lc_dir}\n")
 
 # ---------------------------------------------------------------------------
 # Main
@@ -637,6 +698,8 @@ def main():
                         help="Skip soil raster download.")
     parser.add_argument("--skip-basemap",     action="store_true",
                         help="Skip Natural Earth basemap download.")
+    parser.add_argument("--skip-landcover",   action="store_true",
+                        help="Skip EarthEnv land cover raster download.")
 
     args = parser.parse_args()
 
@@ -712,10 +775,10 @@ def main():
     else:
         print("[basemap] Skipped.\n")
 
-    print("=" * 55)
-    print("  Done. Run scripts/preprocess_rasters.py next.")
-    print("=" * 55)
-
+    if not args.skip_landcover:
+        download_landcover(args.raster_dir)
+    else:
+        print("[landcover] Skipped.\n")
 
 if __name__ == "__main__":
     main()

@@ -66,7 +66,7 @@ Scalar rasters (elevation, slope, bioclim):
 Soil probability rasters (123 classes):
     Nearest-pixel via rasterio's src.sample() generator, collected into
     a numpy array via np.fromiter (no Python-level per-point loop).
-    src.sample() decompresses only the LZW blocks containing requested
+    src.sample() decompresses only the blocks containing requested
     points — peak RAM is ~4–5 MB for all concurrent workers combined
     regardless of raster size or worker count.
 

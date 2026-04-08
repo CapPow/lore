@@ -85,6 +85,10 @@ LANDCOVER_CLASSES = {
 
 BBOX_JSON_NAME  = "bbox.json"
 BLOCK_SIZE      = 256
+# Compression for all clipped output rasters.
+# deflate level 1 is lossless, ~35% faster to write than LZW on float32 data.
+COMPRESS = "deflate"
+ZLEVEL   = 1
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -159,7 +163,8 @@ def _clip_raster_to_bbox(
             "height":     data.shape[1],
             "width":      data.shape[2],
             "transform":  transform,
-            "compress":   "lzw",
+            "compress":   COMPRESS,
+            "zlevel":     ZLEVEL,
             "tiled":      True,
             "blockxsize": BLOCK_SIZE,
             "blockysize": BLOCK_SIZE,
@@ -303,7 +308,8 @@ def _build_soil_cache(
                 "height":     band.shape[0],
                 "width":      band.shape[1],
                 "transform":  transform,
-                "compress":   "lzw",
+                "compress":   COMPRESS,
+                "zlevel":     ZLEVEL,
                 "tiled":      True,
                 "blockxsize": BLOCK_SIZE,
                 "blockysize": BLOCK_SIZE,
@@ -316,11 +322,12 @@ def _build_soil_cache(
         return class_name, float(band.min()), float(band.max())
 
     results = {}
-    for tif in tqdm(prob_tifs, desc="  soil clips", unit="raster"):
-        try:
-            results[tif] = _clip_one(tif)
-        except Exception as e:
-            print(f"  [soil] ERROR clipping {tif.name}: {e}")
+    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR"):
+        for tif in tqdm(prob_tifs, desc="  soil clips", unit="raster"):
+            try:
+                results[tif] = _clip_one(tif)
+            except Exception as e:
+                print(f"  [soil] ERROR clipping {tif.name}: {e}")
 
     # reconstruct in sorted order for deterministic class index
     class_names = []

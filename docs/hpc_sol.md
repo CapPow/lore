@@ -131,6 +131,7 @@ nohup python run_pipeline.py \
     --dest-taxa "Peromyscus maniculatus" "Peromyscus sonoriensis" \
                 "Peromyscus gambelii" "Peromyscus keeni" \
                 "Peromyscus labecula" "Peromyscus arcticus" \
+                "Peromyscus polionotus" "Peromyscus melanotis"\
     --mdd-group Rodentia \
     --device cuda \
     --workers 8 \
